@@ -13,7 +13,7 @@ from prophet.diagnostics import cross_validation, performance_metrics
 from prophet.plot import plot_cross_validation_metric
 import logging
 
-# Suppress Prophet logs to keep Streamlit output clean
+# Suppress Prophet logs for cleaner Streamlit output
 logging.getLogger('prophet').setLevel(logging.WARNING)
 
 # --- Configuration Constants ---
@@ -33,20 +33,19 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
 
 # --- Data Loading and Saving Functions ---
-@st.cache_data(show_spinner=False) # Cache data loading to improve performance
-def load_sales_data():
+@st.cache_data(show_spinner=False)
+def load_sales_data_cached():
     """
     Loads sales data from 'sales_data.csv'.
     If the file doesn't exist or is empty, an empty DataFrame is created and saved.
     Ensures 'Date' column is datetime, and data is sorted and deduplicated by date.
+    This function is cached by Streamlit.
     """
     if not os.path.exists(SALES_DATA_PATH) or os.path.getsize(SALES_DATA_PATH) == 0:
-        # Create an empty DataFrame with the expected columns and datetime type for 'Date'
         df = pd.DataFrame(columns=['Date', 'Sales', 'Customers', 'Add_on_Sales', 'Weather'])
-        df['Date'] = pd.to_datetime(df['Date']) # Convert to datetime (will be NaT for empty initially)
+        df['Date'] = pd.to_datetime(df['Date']) # Ensure column type for future data
         df.to_csv(SALES_DATA_PATH, index=False)
     else:
-        # Load existing data
         df = pd.read_csv(SALES_DATA_PATH)
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce') # Coerce invalid dates to NaT
         df = df.dropna(subset=['Date']) # Drop rows where Date conversion failed
@@ -54,29 +53,27 @@ def load_sales_data():
     # Ensure loaded data is always sorted by Date and unique (keeping the latest entry for any duplicate date)
     return df.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').reset_index(drop=True)
 
-def save_sales_data(df):
+def save_sales_data_and_clear_cache(df):
     """
-    Saves the given DataFrame to 'sales_data.csv'.
-    Data is deduplicated and sorted before saving to maintain file consistency.
-    Clears Streamlit's cache for 'load_sales_data' to force a fresh reload next time.
+    Saves the given DataFrame to 'sales_data.csv' and clears the cache
+    for `load_sales_data_cached` to force a fresh reload next time.
     """
     df.sort_values('Date').drop_duplicates(subset=['Date'], keep='last').to_csv(SALES_DATA_PATH, index=False)
-    st.cache_data.clear() # Clear cache for load_sales_data()
+    st.cache_data.clear() # Clear cache for load_sales_data_cached()
 
-@st.cache_data(show_spinner=False) # Cache data loading for events
-def load_events_data():
+@st.cache_data(show_spinner=False)
+def load_events_data_cached():
     """
     Loads event data from 'events_data.csv'.
     If the file doesn't exist or is empty, an empty DataFrame is created and saved.
     Ensures 'Event_Date' column is datetime, and data is sorted and deduplicated by event date.
+    This function is cached by Streamlit.
     """
     if not os.path.exists(EVENTS_DATA_PATH) or os.path.getsize(EVENTS_DATA_PATH) == 0:
-        # Create an empty DataFrame with expected columns
         df = pd.DataFrame(columns=['Event_Date', 'Event_Name', 'Impact'])
         df['Event_Date'] = pd.to_datetime(df['Event_Date'])
         df.to_csv(EVENTS_DATA_PATH, index=False)
     else:
-        # Load existing data
         df = pd.read_csv(EVENTS_DATA_PATH)
         df['Event_Date'] = pd.to_datetime(df['Event_Date'], errors='coerce') # Coerce invalid dates
         df = df.dropna(subset=['Event_Date']) # Drop rows where Event_Date conversion failed
@@ -84,14 +81,13 @@ def load_events_data():
     # Ensure loaded data is always sorted by Event_Date and unique
     return df.sort_values('Event_Date').drop_duplicates(subset=['Event_Date'], keep='last').reset_index(drop=True)
 
-def save_events_data(df):
+def save_events_data_and_clear_cache(df):
     """
-    Saves the given DataFrame to 'events_data.csv'.
-    Data is deduplicated and sorted before saving.
-    Clears Streamlit's cache for 'load_events_data' to force a fresh reload.
+    Saves the given DataFrame to 'events_data.csv' and clears the cache
+    for `load_events_data_cached` to force a fresh reload.
     """
     df.sort_values('Event_Date').drop_duplicates(subset=['Event_Date'], keep='last').to_csv(EVENTS_DATA_PATH, index=False)
-    st.cache_data.clear() # Clear cache for load_events_data()
+    st.cache_data.clear() # Clear cache for load_events_data_cached()
 
 # --- Preprocessing for RandomForestRegressor ---
 def preprocess_rf_data(df_sales, df_events):
@@ -99,58 +95,53 @@ def preprocess_rf_data(df_sales, df_events):
     Preprocesses sales and events data to create features for RandomForestRegressor.
     Includes time-based features, weather one-hot encoding, and event impact.
     Handles empty input DataFrames.
+    Returns X (features), y_sales (sales target), y_customers (customers target), and the processed df.
     """
     if df_sales.empty:
-        # Return empty dataframes/series if sales data is empty, as no features can be created
         return pd.DataFrame(), pd.Series(dtype='float64'), pd.Series(dtype='float64'), pd.DataFrame()
 
-    df = df_sales.copy() # Work on a copy to prevent SettingWithCopyWarning
-    df['Date'] = pd.to_datetime(df['Date']) # Ensure Date is datetime type
+    df = df_sales.copy()
+    df['Date'] = pd.to_datetime(df['Date'])
     df = df.sort_values('Date').reset_index(drop=True)
 
-    # Time-based features extraction
-    df['day_of_week'] = df['Date'].dt.dayofweek # Monday=0, Sunday=6
+    # Time-based features
+    df['day_of_week'] = df['Date'].dt.dayofweek
     df['day_of_year'] = df['Date'].dt.dayofyear
     df['month'] = df['Date'].dt.month
     df['year'] = df['Date'].dt.year
-    df['week_of_year'] = df['Date'].dt.isocalendar().week.astype(int) # Week of year as integer
-    df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int) # 1 for weekend, 0 for weekday
+    df['week_of_year'] = df['Date'].dt.isocalendar().week.astype(int)
+    df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
 
     # Weather one-hot encoding
-    all_weather_conditions = ['Sunny', 'Cloudy', 'Rainy', 'Snowy'] # Standardize weather conditions
+    all_weather_conditions = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
     for cond in all_weather_conditions:
         col_name = f'weather_{cond}'
-        df[col_name] = (df['Weather'] == cond).astype(int) # Create a binary column for each weather type
+        df[col_name] = (df['Weather'] == cond).astype(int)
 
     # Merge with events data to incorporate event impact
-    df['is_event'] = 0 # Initialize 'is_event' flag
-    df['event_impact_score'] = 0.0 # Initialize numerical event impact score
+    df['is_event'] = 0
+    df['event_impact_score'] = 0.0
 
     if not df_events.empty:
         df_events_copy = df_events.copy()
         df_events_copy['Event_Date'] = pd.to_datetime(df_events_copy['Event_Date'])
-        impact_map = {'Low': 0.1, 'Medium': 0.5, 'High': 1.0} # Map impact levels to numerical scores
+        impact_map = {'Low': 0.1, 'Medium': 0.5, 'High': 1.0}
         df_events_copy['Impact_Score'] = df_events_copy['Impact'].map(impact_map).fillna(0)
 
-        # Perform left merge to bring event data into the sales dataframe
         merged = pd.merge(df[['Date']], df_events_copy[['Event_Date', 'Impact_Score']],
                           left_on='Date', right_on='Event_Date', how='left')
         
-        df['is_event'] = merged['Event_Date'].notna().astype(int) # Set flag if an event occurred
-        df['event_impact_score'] = merged['Impact_Score'].fillna(0) # Use impact score, default to 0 if no event
+        df['is_event'] = merged['Event_Date'].notna().astype(int)
+        df['event_impact_score'] = merged['Impact_Score'].fillna(0)
 
-    # Lag features: sales and customers from previous days/weeks
-    # These are crucial for time series prediction and will be updated iteratively during forecasting
+    # Lag features
     df['Sales_Lag1'] = df['Sales'].shift(1)
     df['Customers_Lag1'] = df['Customers'].shift(1)
-    df['Sales_Lag7'] = df['Sales'].shift(7) # Sales from the same day last week
+    df['Sales_Lag7'] = df['Sales'].shift(7)
     df['Customers_Lag7'] = df['Customers'].shift(7)
 
-    # Fill NaN values created by shifting (e.g., first few days won't have lags)
-    # Using 0 as a placeholder for missing prior data
-    df = df.fillna(0)
+    df = df.fillna(0) # Fill NaNs from shifting with 0
 
-    # Define the list of features to be used for model training
     feature_columns = [
         'day_of_week', 'day_of_year', 'month', 'year', 'week_of_year', 'is_weekend',
         'Sales_Lag1', 'Customers_Lag1', 'Sales_Lag7', 'Customers_Lag7',
@@ -158,21 +149,20 @@ def preprocess_rf_data(df_sales, df_events):
     ]
     feature_columns.extend([f'weather_{cond}' for cond in all_weather_conditions])
 
-    # Ensure all feature columns exist in the DataFrame, adding with 0 if missing
-    # This prevents errors if a particular weather condition, for instance, isn't in the training data
+    # Ensure all feature columns exist, adding with 0 if missing (important for consistent input to model)
     for col in feature_columns:
         if col not in df.columns:
             df[col] = 0
 
-    X = df[feature_columns] # Features DataFrame
-    y_sales = df['Sales']   # Target Series for Sales
-    y_customers = df['Customers'] # Target Series for Customers
+    X = df[feature_columns]
+    y_sales = df['Sales']
+    y_customers = df['Customers']
 
-    # Store feature columns and weather conditions in session state for later use in forecasting
+    # Store these in session state for use in forecasting (to maintain feature consistency)
     st.session_state['rf_feature_columns'] = feature_columns
     st.session_state['all_weather_conditions'] = all_weather_conditions
 
-    return X, y_sales, y_customers, df # Return the processed DataFrame for potential further use (e.g., lag initialization)
+    return X, y_sales, y_customers, df
 
 # --- Preprocessing for Prophet ---
 def preprocess_prophet_data(df_sales, df_events, target_column):
@@ -185,21 +175,18 @@ def preprocess_prophet_data(df_sales, df_events, target_column):
     if df_sales.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    df = df_sales.copy() # Work on a copy
-    df['ds'] = pd.to_datetime(df['Date']) # Prophet requires a 'ds' column for datetime
-    df['y'] = df[target_column] # Prophet requires a 'y' column for the target variable
+    df = df_sales.copy()
+    df['ds'] = pd.to_datetime(df['Date'])
+    df['y'] = df[target_column]
 
-    # Add 'Add_on_Sales' as an external regressor if it's not the target itself
     if target_column != 'Add_on_Sales':
         df['Add_on_Sales'] = df_sales['Add_on_Sales']
     
-    # Add weather as extra regressors using one-hot encoding
-    # Ensure 'Weather' column exists and is not empty before creating dummies
+    # Weather one-hot encoding for Prophet regressors
     if 'Weather' in df.columns and not df['Weather'].empty:
         weather_dummies = pd.get_dummies(df['Weather'], prefix='weather')
         df = pd.concat([df, weather_dummies], axis=1)
     else:
-        # If 'Weather' column is missing or empty, create dummy columns initialized to zeros
         for cond in ['Sunny', 'Cloudy', 'Rainy', 'Snowy']:
             df[f'weather_{cond}'] = 0
 
@@ -208,21 +195,19 @@ def preprocess_prophet_data(df_sales, df_events, target_column):
     if not df_events.empty:
         holidays_df = df_events.rename(columns={'Event_Date': 'ds', 'Event_Name': 'holiday'})
         holidays_df['ds'] = pd.to_datetime(holidays_df['ds'])
-        holidays_df = holidays_df[['ds', 'holiday']].drop_duplicates(subset=['ds']) # Ensure unique holidays by date
+        holidays_df = holidays_df[['ds', 'holiday']].drop_duplicates(subset=['ds'])
 
-    # Select final columns for Prophet model training
-    prophet_df = df[['ds', 'y']].copy() # Create a copy for prophet_df
-    if target_column != 'Add_on_Sales': # Avoid circularity
-        prophet_df['Add_on_Sales'] = df['Add_on_Sales'] # Add add-on sales as regressor
+    prophet_df = df[['ds', 'y']].copy()
+    if target_column != 'Add_on_Sales':
+        prophet_df['Add_on_Sales'] = df['Add_on_Sales']
     
-    # Add weather regressors to the prophet_df
     all_weather_conditions = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
     for cond in all_weather_conditions:
         col_name = f'weather_{cond}'
         if col_name in df.columns:
             prophet_df[col_name] = df[col_name]
         else:
-            prophet_df[col_name] = 0 # Ensure regressor column exists, even if all zeros
+            prophet_df[col_name] = 0
 
     return prophet_df, holidays_df
 
@@ -240,10 +225,10 @@ def train_random_forest_models(X, y_sales, y_customers, n_estimators):
     customers_model = RandomForestRegressor(n_estimators=n_estimators, random_state=42, n_jobs=-1)
 
     sales_model.fit(X, y_sales)
-    joblib.dump(sales_model, SALES_RF_MODEL_PATH) # Save sales model
+    joblib.dump(sales_model, SALES_RF_MODEL_PATH)
 
     customers_model.fit(X, y_customers)
-    joblib.dump(customers_model, CUSTOMERS_RF_MODEL_PATH) # Save customers model
+    joblib.dump(customers_model, CUSTOMERS_RF_MODEL_PATH)
 
     return sales_model, customers_model
 
@@ -260,10 +245,9 @@ def train_prophet_models(prophet_sales_df, prophet_customers_df, holidays_df):
         st.warning("Prophet requires at least 2 data points for training. Please add more sales records.")
         return None, None
 
-    sales_prophet_model = Prophet(holidays=holidays_df, interval_width=0.95) # 95% confidence interval
+    sales_prophet_model = Prophet(holidays=holidays_df, interval_width=0.95)
     customers_prophet_model = Prophet(holidays=holidays_df, interval_width=0.95)
 
-    # Add extra regressors to Prophet models if they exist in the dataframe
     if 'Add_on_Sales' in prophet_sales_df.columns:
         sales_prophet_model.add_regressor('Add_on_Sales')
         customers_prophet_model.add_regressor('Add_on_Sales')
@@ -274,21 +258,21 @@ def train_prophet_models(prophet_sales_df, prophet_customers_df, holidays_df):
         customers_prophet_model.add_regressor(col)
 
     sales_prophet_model.fit(prophet_sales_df)
-    joblib.dump(sales_prophet_model, SALES_PROPHET_MODEL_PATH) # Save sales prophet model
+    joblib.dump(sales_prophet_model, SALES_PROPHET_MODEL_PATH)
 
     customers_prophet_model.fit(prophet_customers_df)
-    joblib.dump(customers_prophet_model, CUSTOMERS_PROPHET_MODEL_PATH) # Save customers prophet model
+    joblib.dump(customers_prophet_model, CUSTOMERS_PROPHET_MODEL_PATH)
 
     return sales_prophet_model, customers_prophet_model
 
 @st.cache_resource(hash_funcs={pd.DataFrame: pd.util.hash_pandas_object, pd.Series: pd.util.hash_pandas_object})
-def load_or_train_models(model_type, n_estimators_rf=100):
+def load_or_train_models_cached(model_type, n_estimators_rf=100):
     """
     Loads pre-trained models from disk if they exist, otherwise trains them.
     Models are cached to avoid retraining on every Streamlit rerun if data hasn't changed.
     """
-    sales_df_current = load_sales_data() # Get current sales data
-    events_df_current = load_events_data() # Get current events data
+    sales_df_current = st.session_state.sales_data # Use session state data
+    events_df_current = st.session_state.events_data # Use session state data
 
     sales_model = None
     customers_model = None
@@ -300,7 +284,7 @@ def load_or_train_models(model_type, n_estimators_rf=100):
         # Only attempt to load/train if sufficient sales data is available for feature creation
         if not sales_df_current.empty and sales_df_current.shape[0] >= 2:
             X, y_sales, y_customers, _ = preprocess_rf_data(sales_df_current, events_df_current)
-            if not X.empty and X.shape[0] >= 2: # Ensure features DataFrame is also not empty and has enough samples
+            if not X.empty and X.shape[0] >= 2:
                 if os.path.exists(sales_model_path) and os.path.exists(customers_model_path):
                     try:
                         sales_model = joblib.load(sales_model_path)
@@ -322,7 +306,6 @@ def load_or_train_models(model_type, n_estimators_rf=100):
         sales_model_path = SALES_PROPHET_MODEL_PATH
         customers_model_path = CUSTOMERS_PROPHET_MODEL_PATH
 
-        # Only attempt to load/train if sufficient sales data is available
         if not sales_df_current.empty and sales_df_current.shape[0] >= 2:
             prophet_sales_df, holidays_df = preprocess_prophet_data(sales_df_current, events_df_current, 'Sales')
             prophet_customers_df, _ = preprocess_prophet_data(sales_df_current, events_df_current, 'Customers')
@@ -350,7 +333,7 @@ def load_or_train_models(model_type, n_estimators_rf=100):
 def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, future_weather_inputs, num_days=10):
     """
     Generates sales and customer forecasts for the next N days using RandomForest.
-    Uses iterative prediction for lagged features.
+    Uses iterative prediction for lagged features, updating them with forecasts.
     """
     if sales_model is None or customers_model is None:
         st.warning("RandomForest models are not trained. Please ensure you have sufficient data and a model is selected and trained.")
@@ -359,19 +342,18 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     forecast_dates = [today + timedelta(days=i) for i in range(1, num_days + 1)]
 
-    # Prepare known actual data for initial lags
     historical_data_for_lags = sales_df.copy()
     historical_data_for_lags['Date'] = pd.to_datetime(historical_data_for_lags['Date'])
     historical_data_for_lags = historical_data_for_lags.sort_values('Date').reset_index(drop=True)
 
     forecast_results = []
     
-    # Initialize lag values from the end of actual historical data
-    current_sales_lag1 = historical_data_for_lags['Sales'].iloc[-1] if not historical_data_for_lags.empty else 0
-    current_customers_lag1 = historical_data_for_lags['Customers'].iloc[-1] if not historical_data_for_lags.empty else 0
+    # Initialize current day's lag features from the *latest* actual historical data
+    # Use .item() to get scalar value from Series to prevent array issues with single value
+    current_sales_lag1 = historical_data_for_lags['Sales'].iloc[-1].item() if not historical_data_for_lags.empty else 0
+    current_customers_lag1 = historical_data_for_lags['Customers'].iloc[-1].item() if not historical_data_for_lags.empty else 0
     
     # Get last 7 days of sales/customers for Sales_Lag7/Customers_Lag7
-    # Pad with zeros if less than 7 days of history available
     last_7_sales = historical_data_for_lags['Sales'].tail(7).tolist()
     last_7_customers = historical_data_for_lags['Customers'].tail(7).tolist()
     
@@ -382,53 +364,46 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
     for i in range(num_days):
         forecast_date = forecast_dates[i]
         
-        # Determine weather for the current forecast date
         current_weather_input = next((item['weather'] for item in future_weather_inputs if item['date'] == forecast_date.strftime('%Y-%m-%d')), 'Sunny')
 
-        # Create a DataFrame for features for the current date
-        current_features = pd.DataFrame([{
-            'Date': forecast_date,
+        current_features_data = {
             'day_of_week': forecast_date.weekday(),
             'day_of_year': forecast_date.dayofyear,
             'month': forecast_date.month,
             'year': forecast_date.year,
             'week_of_year': forecast_date.isocalendar().week.astype(int),
             'is_weekend': int(forecast_date.weekday() in [5, 6]),
-            'Sales_Lag1': current_sales_lag1,       # Use the lagged value from previous prediction or actual
-            'Customers_Lag1': current_customers_lag1, # Use the lagged value from previous prediction or actual
-            'Sales_Lag7': last_7_sales[i],           # Use the appropriate lag from the 7-day history
-            'Customers_Lag7': last_7_customers[i],   # Use the appropriate lag from the 7-day history
+            'Sales_Lag1': current_sales_lag1,
+            'Customers_Lag1': current_customers_lag1,
+            'Sales_Lag7': last_7_sales[i], # Use the pre-filled 7-day history
+            'Customers_Lag7': last_7_customers[i], # Use the pre-filled 7-day history
             'is_event': 0,
             'event_impact_score': 0.0
-        }])
+        }
 
-        # Add weather one-hot encoded columns
         all_weather_conditions = st.session_state.get('all_weather_conditions', ['Sunny', 'Cloudy', 'Rainy', 'Snowy'])
         for cond in all_weather_conditions:
-            col_name = f'weather_{cond}'
-            current_features[col_name] = (current_weather_input == cond).astype(int)
+            current_features_data[f'weather_{cond}'] = (current_weather_input == cond).astype(int)
 
-        # Incorporate event impact for future dates if applicable
         if not events_df.empty:
             matching_event = events_df[events_df['Event_Date'] == forecast_date]
             if not matching_event.empty:
-                current_features['is_event'] = 1
+                current_features_data['is_event'] = 1
                 impact_map = {'Low': 0.1, 'Medium': 0.5, 'High': 1.0}
-                current_features['event_impact_score'] = impact_map.get(matching_event['Impact'].iloc[0], 0)
+                current_features_data['event_impact_score'] = impact_map.get(matching_event['Impact'].iloc[0], 0)
 
+        input_for_prediction = pd.DataFrame([current_features_data]) # Create DataFrame from dictionary
+        
         # Ensure feature columns match the model's expected order and presence
         feature_cols = st.session_state.get('rf_feature_columns', [])
-        for col in feature_cols:
-            if col not in current_features.columns:
-                current_features[col] = 0 # Add missing features with zero
-        
-        input_for_prediction = current_features[feature_cols]
+        # Important: Reindex to ensure feature order is identical to training data
+        input_for_prediction = input_for_prediction.reindex(columns=feature_cols, fill_value=0)
 
-        # Predict sales and customers using the trained RandomForest models
+
         predicted_sales = sales_model.predict(input_for_prediction)[0]
         predicted_customers = customers_model.predict(input_for_prediction)[0]
 
-        # Calculate approximate 95% Confidence Intervals using quantiles of individual tree predictions
+        # Calculate approximate 95% Confidence Intervals
         sales_predictions_per_tree = np.array([tree.predict(input_for_prediction)[0] for tree in sales_model.estimators_])
         customers_predictions_per_tree = np.array([tree.predict(input_for_prediction)[0] for tree in customers_model.estimators_])
         
@@ -437,7 +412,6 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
         customers_lower = np.percentile(customers_predictions_per_tree, 2.5)
         customers_upper = np.percentile(customers_predictions_per_tree, 97.5)
 
-        # Store forecast results, ensuring values are non-negative and rounded
         forecast_results.append({
             'Date': forecast_date.strftime('%Y-%m-%d'),
             'Forecasted Sales': max(0, round(predicted_sales, 2)),
@@ -446,14 +420,13 @@ def generate_rf_forecast(sales_df, events_df, sales_model, customers_model, futu
             'Forecasted Customers': max(0, round(predicted_customers)),
             'Customers Lower Bound (95%)': max(0, round(customers_lower)),
             'Customers Upper Bound (95%)': max(0, round(customers_upper)),
-            'Weather': current_weather_input # Include the assumed weather for traceability
+            'Weather': current_weather_input
         })
 
-        # Update lag values for the next iteration of forecasting (chained prediction)
+        # Update lag values for the next iteration (chained prediction)
         current_sales_lag1 = predicted_sales
         current_customers_lag1 = predicted_customers
         
-        # Update the 7-day history lists by removing the oldest and adding the new prediction
         last_7_sales.pop(0)
         last_7_sales.append(predicted_sales)
         last_7_customers.pop(0)
@@ -472,21 +445,16 @@ def generate_prophet_forecast(sales_df, events_df, sales_model, customers_model,
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     forecast_dates = [today + timedelta(days=i) for i in range(1, num_days + 1)]
 
-    # Create a future DataFrame required by Prophet for predictions
     future_prophet_df = pd.DataFrame({'ds': forecast_dates})
     
-    # Add 'Add_on_Sales' as an external regressor for future dates.
-    # For simplicity, we use the historical average; in a real app, this might come from another forecast.
     avg_add_on_sales = sales_df['Add_on_Sales'].mean() if not sales_df.empty else 0
     future_prophet_df['Add_on_Sales'] = avg_add_on_sales
 
-    # Add weather as extra regressors based on user inputs for future weather
     all_weather_conditions = st.session_state.get('all_weather_conditions', ['Sunny', 'Cloudy', 'Rainy', 'Snowy'])
     for cond in all_weather_conditions:
         col_name = f'weather_{cond}'
-        future_prophet_df[col_name] = 0 # Initialize weather columns to zero
+        future_prophet_df[col_name] = 0
 
-    # Populate the weather columns based on the user's future weather inputs
     for i, row in future_prophet_df.iterrows():
         current_date_str = row['ds'].strftime('%Y-%m-%d')
         matching_weather_input = next((item for item in future_weather_inputs if item['date'] == current_date_str), None)
@@ -494,13 +462,11 @@ def generate_prophet_forecast(sales_df, events_df, sales_model, customers_model,
             chosen_weather = matching_weather_input['weather']
             col_name = f'weather_{chosen_weather}'
             if col_name in future_prophet_df.columns:
-                future_prophet_df.loc[i, col_name] = 1 # Set the corresponding weather dummy to 1
+                future_prophet_df.loc[i, col_name] = 1
 
-    # Predict using the trained Prophet models
     forecast_sales = sales_model.predict(future_prophet_df)
     forecast_customers = customers_model.predict(future_prophet_df)
 
-    # Combine Prophet's forecast output into a user-friendly DataFrame
     forecast_df = pd.DataFrame({
         'Date': forecast_sales['ds'].dt.strftime('%Y-%m-%d'),
         'Forecasted Sales': forecast_sales['yhat'].apply(lambda x: max(0, round(x, 2))),
@@ -511,7 +477,6 @@ def generate_prophet_forecast(sales_df, events_df, sales_model, customers_model,
         'Customers Upper Bound (95%)': forecast_customers['yhat_upper'].apply(lambda x: max(0, round(x))),
     })
     
-    # Add the assumed weather back for display purposes
     forecast_df['Weather'] = [next((item['weather'] for item in future_weather_inputs if item['date'] == date_str), 'Sunny') for date_str in forecast_df['Date']]
 
     return forecast_df
@@ -522,39 +487,38 @@ st.set_page_config(layout="wide", page_title="AI Sales & Customer Forecast App")
 st.title("🎯 AI Sales & Customer Forecast Analyst")
 st.markdown("Your 200 IQ analyst for daily sales and customer volume forecasting!")
 
-# Initialize session state for data
+# --- Initialize Streamlit Session State ---
+# This ensures variables persist across reruns and are initialized only once
 if 'app_initialized' not in st.session_state:
-    st.session_state['sales_data'] = load_sales_data()
-    st.session_state['events_data'] = load_events_data()
+    st.session_state['sales_data'] = load_sales_data_cached()
+    st.session_state['events_data'] = load_events_data_cached()
     st.session_state['sales_model'] = None
     st.session_state['customers_model'] = None
-    st.session_state['model_type'] = "RandomForest" # Default model
-    st.session_state['rf_n_estimators'] = 100 # Default hyperparameter
-    st.session_state['future_weather_inputs'] = [] # For future weather input
+    st.session_state['model_type'] = "RandomForest" # Default model selection
+    st.session_state['rf_n_estimators'] = 100 # Default hyperparameter for RandomForest
+    st.session_state['future_weather_inputs'] = [] # Stores user's input for future weather
     st.session_state['app_initialized'] = True # Set to True immediately if this block runs
 
 # --- Initial Sample Data Creation (Run once if files don't exist) ---
-def create_sample_data_if_empty():
-    """Creates sample sales and event data if files are empty or don't exist."""
-    sales_df_check = load_sales_data()
-    events_df_check = load_events_data()
+def create_sample_data_if_empty_and_initialize():
+    """Creates sample sales and event data if files are empty or don't exist, then reruns app."""
+    sales_df_check = load_sales_data_cached()
+    events_df_check = load_events_data_cached()
 
-    # Flag to determine if a rerun is needed after creating sample data
     rerun_needed = False
 
     if sales_df_check.empty:
         st.info("Creating sample sales data for a quick start...")
-        dates = pd.to_datetime(pd.date_range(end=datetime.now(), periods=60, freq='D')) # More data
-        np.random.seed(42)
+        dates = pd.to_datetime(pd.date_range(end=datetime.now() - timedelta(days=1), periods=60, freq='D')) # 60 days ending yesterday
+        np.random.seed(42) # For reproducibility
         sales = np.random.randint(500, 1500, size=len(dates)) + np.random.randn(len(dates)) * 50
         customers = np.random.randint(50, 200, size=len(dates)) + np.random.randn(len(dates)) * 10
         add_on_sales = np.random.randint(0, 100, size=len(dates))
         weather_choices = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
         weather = np.random.choice(weather_choices, size=len(dates), p=[0.5, 0.3, 0.15, 0.05])
 
-        # Introduce some patterns
         for i, date in enumerate(dates):
-            if date.dayofweek >= 5: # Saturday or Sunday
+            if date.weekday() >= 5: # Weekends
                 sales[i] = sales[i] * 1.2
                 customers[i] = customers[i] * 1.2
             if weather[i] == 'Rainy':
@@ -571,8 +535,8 @@ def create_sample_data_if_empty():
             'Add_on_Sales': add_on_sales.round(2),
             'Weather': weather
         })
-        save_sales_data(sample_sales_df)
-        st.session_state.sales_data = load_sales_data() # Ensure session state is also clean after sample data creation
+        save_sales_data_and_clear_cache(sample_sales_df)
+        st.session_state.sales_data = load_sales_data_cached() # Update session state immediately
         rerun_needed = True
         
     if events_df_check.empty:
@@ -581,21 +545,22 @@ def create_sample_data_if_empty():
             {'Event_Date': pd.to_datetime('2024-06-20'), 'Event_Name': 'Annual Fair', 'Impact': 'High'},
             {'Event_Date': pd.to_datetime('2023-12-25'), 'Event_Name': 'Christmas Day', 'Impact': 'High'},
             {'Event_Date': pd.to_datetime('2024-03-15'), 'Event_Name': 'Spring Festival', 'Impact': 'Medium'},
-            {'Event_Date': pd.to_datetime('2025-06-27'), 'Event_Name': 'Charter Day 2025 (Future)', 'Impact': 'High'}, # Example future event
+            {'Event_Date': pd.to_datetime('2025-06-27'), 'Event_Name': 'Charter Day 2025 (Future)', 'Impact': 'High'},
             {'Event_Date': pd.to_datetime('2025-07-04'), 'Event_Name': 'Independence Day (Future)', 'Impact': 'Medium'},
             {'Event_Date': pd.to_datetime('2024-07-04'), 'Event_Name': 'Independence Day 2024', 'Impact': 'Medium'},
         ])
-        save_events_data(sample_events_df)
-        st.session_state.events_data = load_events_data() # Ensure session state is also clean after sample data creation
+        save_events_data_and_clear_cache(sample_events_df)
+        st.session_state.events_data = load_events_data_cached() # Update session state immediately
         rerun_needed = True
         
     if rerun_needed:
-        st.success("Sample data created!")
-        st.experimental_rerun() # Rerun to load initial data into session state and trigger model loading
+        st.success("Sample data created! Rerunning application to load models.")
+        st.experimental_rerun() # Force a rerun to ensure models are trained on new data
 
-
-# Call the function to create sample data if needed
-create_sample_data_if_empty()
+# Call sample data creation on initial load if needed
+if not st.session_state.get('ran_sample_data_init', False):
+    create_sample_data_if_empty_and_initialize()
+    st.session_state['ran_sample_data_init'] = True # Set flag to prevent rerunning this again
 
 # --- Sidebar for Model Settings and Event Logger ---
 st.sidebar.header("🛠️ Model Settings")
@@ -603,30 +568,30 @@ model_type_selection = st.sidebar.selectbox(
     "Select AI Model:",
     ["RandomForest", "Prophet"],
     index=0 if st.session_state.model_type == "RandomForest" else 1,
-    key='model_type_selector', # Unique key for this widget
+    key='model_type_selector',
     help="RandomForest is versatile. Prophet is good for time series with strong seasonality and holidays."
 )
 if model_type_selection != st.session_state.model_type:
     st.session_state.model_type = model_type_selection
-    st.session_state.sales_model = None # Reset models when type changes
+    st.session_state.sales_model = None # Reset models when model type changes
     st.session_state.customers_model = None
-    st.experimental_rerun() # Rerun to apply model type change
+    st.experimental_rerun()
 
 if st.session_state.model_type == "RandomForest":
     rf_n_estimators = st.sidebar.slider(
         "RandomForest n_estimators:",
         min_value=50, max_value=500, value=st.session_state.rf_n_estimators, step=50,
-        key='rf_n_estimators_slider', # Unique key
+        key='rf_n_estimators_slider',
         help="Number of trees in the forest. Higher values increase accuracy but also computation time."
     )
     if rf_n_estimators != st.session_state.rf_n_estimators:
         st.session_state.rf_n_estimators = rf_n_estimators
-        st.session_state.sales_model = None # Reset model to re-train with new param
+        st.session_state.sales_model = None
         st.session_state.customers_model = None
         st.experimental_rerun()
 
 st.sidebar.header("🗓️ Event Logger (Past & Future)")
-with st.sidebar.form("event_input_form", clear_on_submit=True): # Clear form after submission
+with st.sidebar.form("event_input_form", clear_on_submit=True):
     st.subheader("Add Historical/Future Event")
     event_date = st.date_input("Event Date", datetime.now() - timedelta(days=365), key='sidebar_event_date_input')
     event_name = st.text_input("Event Name (e.g., Charter Day, Fiesta)", max_chars=100, key='sidebar_event_name_input')
@@ -640,13 +605,12 @@ with st.sidebar.form("event_input_form", clear_on_submit=True): # Clear form aft
             'Impact': event_impact
         }])
         st.session_state.events_data = pd.concat([st.session_state.events_data, new_event_df], ignore_index=True)
-        save_events_data(st.session_state.events_data) # Save to disk
-        st.session_state.events_data = load_events_data() # Reload clean data into session state
+        save_events_data_and_clear_cache(st.session_state.events_data)
+        st.session_state.events_data = load_events_data_cached()
         st.sidebar.success(f"Event '{event_name}' added! AI will retrain.")
-        st.session_state.sales_model = None # Force retraining of ML models
+        st.session_state.sales_model = None
         st.session_state.customers_model = None
-        st.experimental_rerun() # Rerun to reflect changes and retrain models
-
+        st.experimental_rerun()
 
 st.sidebar.subheader("Logged Events")
 if not st.session_state.events_data.empty:
@@ -654,7 +618,6 @@ if not st.session_state.events_data.empty:
     display_events_df['Event_Date'] = display_events_df['Event_Date'].dt.strftime('%Y-%m-%d')
     st.sidebar.dataframe(display_events_df, use_container_width=True)
 
-    # Delete Event functionality
     event_dates_to_delete = st.sidebar.multiselect(
         "Select events to delete:",
         st.session_state.events_data['Event_Date'].dt.strftime('%Y-%m-%d').tolist(),
@@ -666,10 +629,10 @@ if not st.session_state.events_data.empty:
             st.session_state.events_data = st.session_state.events_data[
                 ~st.session_state.events_data['Event_Date'].dt.date.isin(dates_to_delete_dt)
             ].reset_index(drop=True)
-            save_events_data(st.session_state.events_data) # Save changes to disk
-            st.session_state.events_data = load_events_data() # Reload clean data
+            save_events_data_and_clear_cache(st.session_state.events_data)
+            st.session_state.events_data = load_events_data_cached()
             st.sidebar.success("Selected events deleted! AI will retrain.")
-            st.session_state.sales_model = None # Force retraining
+            st.session_state.sales_model = None
             st.session_state.customers_model = None
             st.experimental_rerun()
         else:
@@ -677,13 +640,11 @@ if not st.session_state.events_data.empty:
 else:
     st.sidebar.info("No events logged yet.")
 
-
 # --- Model Loading and Training (runs on most reruns, but uses caching) ---
-# Display spinner and messages for model loading/training
 if st.session_state.sales_data.shape[0] > 1: # Only attempt if there's enough data for basic training
     with st.spinner(f"Loading/Training AI models ({st.session_state.model_type})... This happens after data changes."):
         try:
-            st.session_state.sales_model, st.session_state.customers_model = load_or_train_models(
+            st.session_state.sales_model, st.session_state.customers_model = load_or_train_models_cached(
                 st.session_state.model_type, st.session_state.rf_n_estimators
             )
         except Exception as e:
@@ -692,19 +653,17 @@ if st.session_state.sales_data.shape[0] > 1: # Only attempt if there's enough da
 else:
     st.info("Add more sales records (at least 2 days) to enable AI model training and forecasting. Model training will start automatically once data is sufficient.")
 
-
-# Main tabs for navigation
+# --- Main Application Tabs ---
 tab1, tab2, tab3 = st.tabs(["📊 Daily Sales Input", "📈 10-Day Forecast", "📊 Forecast Accuracy Tracking"])
 
 with tab1:
     st.header("Smart Data Input System")
     st.markdown("Enter daily sales and customer data. The AI will learn from these inputs.")
 
-    with st.form("daily_input_form", clear_on_submit=True): # Clear form after submission
+    with st.form("daily_input_form", clear_on_submit=True):
         st.subheader("Add New Daily Record")
         col1, col2, col3 = st.columns(3)
         with col1:
-            # Default date for new input form
             input_date = st.date_input("Date", datetime.now(), key='daily_input_date_picker')
         with col2:
             sales = st.number_input("Sales", min_value=0.0, format="%.2f", key='daily_sales_input')
@@ -720,9 +679,7 @@ with tab1:
         add_record_button = st.form_submit_button("Add Record")
 
         if add_record_button:
-            # Convert input date to datetime for comparison
             input_date_dt = pd.to_datetime(input_date)
-            # Check for duplicate date before adding
             if input_date_dt in st.session_state.sales_data['Date'].values:
                 st.warning(f"Data for {input_date.strftime('%Y-%m-%d')} already exists. Please edit the existing record or choose a different date.")
             else:
@@ -734,39 +691,34 @@ with tab1:
                     'Weather': weather
                 }])
                 st.session_state.sales_data = pd.concat([st.session_state.sales_data, new_record], ignore_index=True)
-                save_sales_data(st.session_state.sales_data) # Save to disk
-                st.session_state.sales_data = load_sales_data() # Reload clean data into session state
+                save_sales_data_and_clear_cache(st.session_state.sales_data)
+                st.session_state.sales_data = load_sales_data_cached()
                 st.success("Record added successfully! AI will retrain automatically.")
-                st.session_state.sales_model = None # Invalidate models to force retraining
+                st.session_state.sales_model = None
                 st.session_state.customers_model = None
-                st.experimental_rerun() # Rerun to update UI and trigger model loading
-
+                st.experimental_rerun()
 
     st.subheader("Last 7 Days of Inputs")
     if not st.session_state.sales_data.empty:
-        # Display the latest 7 unique and sorted records
         display_data = st.session_state.sales_data.sort_values('Date', ascending=False).drop_duplicates(subset=['Date'], keep='first').head(7).copy()
         display_data['Date'] = display_data['Date'].dt.strftime('%Y-%m-%d')
         st.dataframe(display_data, use_container_width=True)
         
-        # Start of the refactored "Edit/Delete Records" section
-        st.subheader("Edit/Delete Records") # No longer a nested subheader
-        
-        # Only proceed if there's actual data to edit/delete
+        st.subheader("Edit/Delete Records")
         unique_dates_for_selectbox = sorted(st.session_state.sales_data['Date'].dt.strftime('%Y-%m-%d').unique().tolist(), reverse=True)
         
-        if unique_dates_for_selectbox: # Crucial check: only show selectbox if there are options
+        if unique_dates_for_selectbox:
             selected_date_str = st.selectbox(
                 "Select a record by Date for editing or deleting:",
                 options=unique_dates_for_selectbox,
                 key='edit_delete_selector'
             )
 
-            # Retrieve the selected row safely
+            # Safely retrieve the selected row (it must exist if selected_date_str is not None)
             selected_row_df = st.session_state.sales_data[
                 st.session_state.sales_data['Date'] == pd.to_datetime(selected_date_str)
             ]
-            selected_row = selected_row_df.iloc[0] # Guaranteed to exist if selectbox has options
+            selected_row = selected_row_df.iloc[0]
 
             st.markdown(f"**Selected Record for {selected_date_str}:**")
             
@@ -793,8 +745,8 @@ with tab1:
                         st.session_state.sales_data['Date'] == pd.to_datetime(selected_date_str),
                         ['Sales', 'Customers', 'Add_on_Sales', 'Weather']
                     ] = [edit_sales, edit_customers, edit_add_on_sales, edit_weather]
-                    save_sales_data(st.session_state.sales_data)
-                    st.session_state.sales_data = load_sales_data()
+                    save_sales_data_and_clear_cache(st.session_state.sales_data)
+                    st.session_state.sales_data = load_sales_data_cached()
                     st.success("Record updated successfully! AI will retrain.")
                     st.session_state.sales_model = None
                     st.session_state.customers_model = None
@@ -803,37 +755,33 @@ with tab1:
                     st.session_state.sales_data = st.session_state.sales_data[
                         st.session_state.sales_data['Date'] != pd.to_datetime(selected_date_str)
                     ].reset_index(drop=True)
-                    save_sales_data(st.session_state.sales_data)
-                    st.session_state.sales_data = load_sales_data()
+                    save_sales_data_and_clear_cache(st.session_state.sales_data)
+                    st.session_state.sales_data = load_sales_data_cached()
                     st.success("Record deleted successfully! AI will retrain.")
                     st.session_state.sales_model = None
                     st.session_state.customers_model = None
                     st.experimental_rerun()
-        else: # This else belongs to `if unique_dates_for_selectbox:`
+        else: # If unique_dates_for_selectbox is empty, show this message
             st.info("No sales records available for editing or deletion.")
-
-    else: # This else belongs to `if not st.session_state.sales_data.empty:` (top level for Last 7 Days + Edit/Delete)
-        st.info("No sales data entered yet.")
+    else: # If st.session_state.sales_data is empty, show this message
+        st.info("No sales data entered yet. Add records above to see them here and enable editing/deletion.")
 
 
 with tab2:
     st.header("10-Day Sales & Customer Forecast")
     st.markdown("View the AI's predictions for the next 10 days.")
 
-    # Future Weather Input Table
     st.subheader("Future Weather Forecast (Next 10 Days)")
     st.markdown("Specify the expected weather for each forecast day. Default is 'Sunny'.")
     
     forecast_dates_for_weather = [(datetime.now() + timedelta(days=i+1)).strftime('%Y-%m-%d') for i in range(10)]
     weather_options = ['Sunny', 'Cloudy', 'Rainy', 'Snowy']
 
-    # Initialize future_weather_inputs if empty or if dates don't match
     if not st.session_state.future_weather_inputs or \
        any(item['date'] not in forecast_dates_for_weather for item in st.session_state.future_weather_inputs) or \
        len(st.session_state.future_weather_inputs) != 10:
         st.session_state.future_weather_inputs = [{'date': d, 'weather': 'Sunny'} for d in forecast_dates_for_weather]
 
-    # Display and allow editing of future weather
     weather_inputs_edited = []
     for i, item in enumerate(st.session_state.future_weather_inputs):
         col_w1, col_w2 = st.columns([1, 2])
@@ -853,7 +801,7 @@ with tab2:
     if st.button("Generate 10-Day Forecast", key='generate_forecast_btn'):
         if st.session_state.sales_data.empty or st.session_state.sales_data.shape[0] < 2:
             st.warning("Please enter at least 2 days of sales data to generate a meaningful forecast.")
-        elif st.session_state.sales_model is None or st.session_state.customers_model is None: # Check if models are actually loaded/trained
+        elif st.session_state.sales_model is None or st.session_state.customers_model is None:
              st.warning("AI models are not ready. Please ensure you have sufficient data and the models are trained.")
         else:
             with st.spinner(f"Generating forecast using {st.session_state.model_type}... This might take a moment as the AI thinks ahead!"):
@@ -880,7 +828,6 @@ with tab2:
         st.subheader("Forecasted Data (with 95% Confidence Interval)")
         st.dataframe(st.session_state.forecast_df, use_container_width=True)
 
-        # Download as CSV
         csv = st.session_state.forecast_df.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="Download Forecast as CSV",
@@ -890,19 +837,16 @@ with tab2:
         )
 
         st.subheader("Forecast Visualization")
-        # Prepare data for plotting: Actuals + Forecasts with confidence intervals
         historical_df_plot = st.session_state.sales_data.copy()
         historical_df_plot['Date'] = pd.to_datetime(historical_df_plot['Date'])
 
         forecast_df_plot = st.session_state.forecast_df.copy()
         forecast_df_plot['Date'] = pd.to_datetime(forecast_df_plot['Date'])
 
-        # Plot Sales
         fig_sales, ax_sales = plt.subplots(figsize=(12, 6))
         sns.lineplot(data=historical_df_plot, x='Date', y='Sales', label='Actual Sales', marker='o', ax=ax_sales, color='blue')
         sns.lineplot(data=forecast_df_plot, x='Date', y='Forecasted Sales', label='Forecasted Sales', marker='x', linestyle='--', ax=ax_sales, color='red')
         
-        # Plot confidence intervals
         ax_sales.fill_between(forecast_df_plot['Date'], forecast_df_plot['Sales Lower Bound (95%)'], forecast_df_plot['Sales Upper Bound (95%)'], color='red', alpha=0.2, label='95% Confidence Interval')
 
         ax_sales.set_title(f'Sales: Actual vs. Forecast ({st.session_state.model_type} Model)')
@@ -914,12 +858,10 @@ with tab2:
         plt.tight_layout()
         st.pyplot(fig_sales)
 
-        # Plot Customers
         fig_customers, ax_customers = plt.subplots(figsize=(12, 6))
         sns.lineplot(data=historical_df_plot, x='Date', y='Customers', label='Actual Customers', marker='o', ax=ax_customers, color='blue')
         sns.lineplot(data=forecast_df_plot, x='Date', y='Forecasted Customers', label='Forecasted Customers', marker='x', linestyle='--', ax=ax_customers, color='red')
         
-        # Plot confidence intervals
         ax_customers.fill_between(forecast_df_plot['Date'], forecast_df_plot['Customers Lower Bound (95%)'], forecast_df_plot['Customers Upper Bound (95%)'], color='red', alpha=0.2, label='95% Confidence Interval')
 
         ax_customers.set_title(f'Customers: Actual vs. Forecast ({st.session_state.model_type} Model)')
@@ -943,7 +885,7 @@ with tab3:
             st.warning("No sales data available to calculate accuracy.")
         elif st.session_state.sales_data.shape[0] < 2:
             st.warning("Please enter at least 2 days of sales data to calculate accuracy.")
-        elif st.session_state.sales_model is None or st.session_state.customers_model is None: # Check if models are actually loaded/trained
+        elif st.session_state.sales_model is None or st.session_state.customers_model is None:
              st.warning("AI models are not ready. Please ensure you have sufficient data and the models are trained first.")
         else:
             with st.spinner(f"Calculating accuracy using {st.session_state.model_type}... This may take a moment."):
@@ -951,7 +893,6 @@ with tab3:
                     X_hist, y_sales_hist, y_customers_hist, _ = preprocess_rf_data(st.session_state.sales_data, st.session_state.events_data)
                     
                     if not X_hist.empty and X_hist.shape[0] > 1:
-                        # Re-predict on historical data to evaluate accuracy
                         predicted_sales_hist = st.session_state.sales_model.predict(X_hist)
                         predicted_customers_hist = st.session_state.customers_model.predict(X_hist)
 
@@ -976,7 +917,6 @@ with tab3:
                         st.write(f"**Customers R² Score:** {r2_customers:.2f}")
                         st.info("An R² score closer to 1 indicates a better fit. MAE shows average error in units.")
 
-                        # Plotting Actual vs. Predicted for Sales
                         fig_acc_sales, ax_acc_sales = plt.subplots(figsize=(12, 6))
                         sns.lineplot(data=accuracy_plot_df, x='Date', y='Actual Sales', label='Actual Sales', marker='o', ax=ax_acc_sales)
                         sns.lineplot(data=accuracy_plot_df, x='Date', y='Predicted Sales', label='Predicted Sales', marker='x', linestyle='--', ax=ax_acc_sales)
@@ -989,7 +929,6 @@ with tab3:
                         plt.tight_layout()
                         st.pyplot(fig_acc_sales)
 
-                        # Plotting Actual vs. Predicted for Customers
                         fig_acc_customers, ax_acc_customers = plt.subplots(figsize=(12, 6))
                         sns.lineplot(data=accuracy_plot_df, x='Date', y='Actual Customers', label='Actual Customers', marker='o', ax=ax_acc_customers)
                         sns.lineplot(data=accuracy_plot_df, x='Date', y='Predicted Customers', label='Predicted Customers', marker='x', linestyle='--', ax=ax_acc_customers)
@@ -1005,7 +944,6 @@ with tab3:
                         st.warning("Not enough data points after preprocessing for accuracy calculation. Please add more sales records.")
 
                 elif st.session_state.model_type == "Prophet":
-                    # Cross-validation for Prophet
                     if st.session_state.sales_data.shape[0] < 30: # Prophet needs a good amount of data for CV
                         st.warning("Prophet cross-validation requires at least 30 days of historical data for meaningful results. Please add more records.")
                     else:
@@ -1014,8 +952,8 @@ with tab3:
                         sales_prophet_df_cv, holidays_df_cv = preprocess_prophet_data(st.session_state.sales_data, st.session_state.events_data, 'Sales')
                         customers_prophet_df_cv, _ = preprocess_prophet_data(st.session_state.sales_data, st.session_state.events_data, 'Customers')
 
-                        if sales_prophet_df_cv.empty or customers_prophet_df_cv.empty:
-                            st.warning("Prophet preprocessed data is empty. Cannot run cross-validation.")
+                        if sales_prophet_df_cv.empty or customers_prophet_df_cv.empty or len(sales_prophet_df_cv) < 2:
+                            st.warning("Prophet preprocessed data is empty or insufficient. Cannot run cross-validation.")
                         else:
                             try:
                                 with st.spinner("Performing cross-validation for Sales model..."):
@@ -1034,9 +972,9 @@ with tab3:
 
                                 st.subheader(f"Prophet Model Performance Metrics (Cross-Validation)")
                                 st.write("Sales Model Performance:")
-                                st.dataframe(df_p_sales.head())
+                                st.dataframe(df_p_sales.head(), use_container_width=True)
                                 st.write("Customers Model Performance:")
-                                st.dataframe(df_p_customers.head())
+                                st.dataframe(df_p_customers.head(), use_container_width=True)
                                 st.info("Metrics are calculated over various forecast horizons. MAE and RMSE are typically desired to be lower.")
 
                                 fig_sales_rmse = plot_cross_validation_metric(df_cv_sales, metric='rmse')
